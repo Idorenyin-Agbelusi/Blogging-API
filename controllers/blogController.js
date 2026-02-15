@@ -1,4 +1,5 @@
 import Blog from "../models/Blog.js";
+import calculateReadingTime from "../helper.js";
 
 export const GetAllBlogs = async (req, res, next) => {
     try {
@@ -14,11 +15,34 @@ export const GetAllBlogs = async (req, res, next) => {
 
 export const GetAllBlogsByUser = async (req, res, next) => {
     try {
-        const blogs = await Blog.find({ authorId: req.user._id });
+        const { page = 1, limit = 20, state } = req.query;
+
+        const pageNumber = parseInt(page);
+        const limitNumber = parseInt(limit);
+
+        const filter = {
+            authorId: req.user._id
+        };
+
+        if (state) {
+            filter.state = state;
+        }
+
+        const blogs = await Blog
+            .find(filter)
+            .sort({ createdAt: -1 })
+            .skip((pageNumber - 1) * limitNumber)
+            .limit(limitNumber);
+
+        const totalBlogs = await Blog.countDocuments(filter);
+
         res.json({
-            message: "user's blogs fetched successfully",
-            blogs: blogs
-        })
+            message: "User's blogs fetched successfully",
+            currentPage: pageNumber,
+            totalPages: Math.ceil(totalBlogs / limitNumber),
+            totalBlogs,
+            blogs
+        });
     } catch (error) {
         next(error);
     }
@@ -26,11 +50,16 @@ export const GetAllBlogsByUser = async (req, res, next) => {
 
 export const GetBlogsById = async (req, res, next) => {
     try {
-        const blog = await Blog.findByIdAndUpdate(
-            req.params.id,
-            { $inc: { read_count: 1 } },
-            { new: true }
-        );
+        const blog = await Blog
+            .findByIdAndUpdate(
+                req.params.id,
+                { $inc: { read_count: 1 } },
+                { returnDocument: "after"}
+            )
+            .populate({
+                path: "authorId",
+                select: "firstName lastName email"
+            });
         if (!blog) {
             return res.status(404).json({ message: "Post not found" });
         }
@@ -50,7 +79,6 @@ export const CreateBlog = async (req, res, next) => {
             description: req.body.description,
             state: 'draft',
             body: req.body.body,
-            timestamp: new Date(),
             authorId: req.user._id,
             tags: req.body.tags
         });
@@ -65,25 +93,81 @@ export const CreateBlog = async (req, res, next) => {
 
 export const PublishBlog = async (req, res, next) => {
     try {
-        const blog = await Blog.findById(req.params.id);
+        const updatedBlog = await Blog
+            .findOneAndUpdate(
+                { _id: req.params.id, authorId: req.user._id },
+                { state: 'published' },
+                { returnDocument: "after"}
+            );
 
-        if (!blog) {
-            const err = new Error(`Blog with id ${req.params.id} not found`)
-            return next(err);
-        }
-        
-        if (blog.authorId.toString() !== req.user._id.toString()) {
-            const err = new Error(`Login as author to modify your blog post`)
-            return next(err);
+        if (!updatedBlog) {
+            return res.status(404).json({ message: 'Blog not found or you are not authorized' })
         }
 
-        blog.state = 'published';
-        await blog.save();
         return res.json({
             message: "blog post published successfully",
-            blog: blog
+            blog: updatedBlog
         })
     } catch (error) {
         return next(error);
     }
+}
+
+export const DeleteBlog = async (req, res, next) => {
+    try {
+        const deletedBlog = await Blog
+            .findOneAndDelete(
+                { _id: req.params.id, authorId: req.user._id }
+            );
+
+        if (!deletedBlog) {
+            res.status(404).json({ message: "Blog not found or you are unauthorized" });
+        }
+
+        res.json({
+            message: "Blog deleted successfully"
+        })
+    } catch (error) {
+        return next(error);
+    }
+}
+
+export const EditBlog = async (req, res, next) => {
+    try {
+        const allowedUpdates = ["title", "body", "tags", "description"];
+
+        const updates = {};
+
+        Object.keys(req.body).forEach((key) => {
+            if (allowedUpdates.includes(key)) {
+                updates[key] = req.body[key];
+            }
+        });
+
+        if (updates.body) {
+            updates.reading_time = calculateReadingTime(updates.body);
+        }
+
+        const editedBlog = await Blog
+            .findOneAndUpdate(
+                { _id: req.params.id, authorId: req.user._id },
+                { $set: updates },
+                {
+                    returnDocument: "after",
+                    runValidators: true
+                }
+            )
+
+        if (!editedBlog) {
+            return res.status(404).json({ message: "Blog not found or you are not authorized" })
+        }
+
+        return res.json({
+            message: "Blog edited successfully",
+            blog: editedBlog
+        });
+    } catch (error) {
+        return next(error);
+    }
+
 }
