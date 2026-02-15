@@ -3,11 +3,57 @@ import calculateReadingTime from "../helper.js";
 
 export const GetAllBlogs = async (req, res, next) => {
     try {
-        const blogs = await Blog.find({ state: 'published' });
+        const {
+            page = 1,
+            limit = 20,
+            searchTerm,
+            sortBy,
+            order
+        } = req.query;
+
+        const pageNumber = parseInt(page);
+        const limitNumber = parseInt(limit);
+
+        const filter = {
+            state: 'published'
+        };
+        if (searchTerm) {
+            filter.$text = { $search: searchTerm };
+        }
+
+        const sortOptions = {};
+
+        if (searchTerm) {
+            sortOptions.score = { $meta: "textScore" };
+        }
+
+        const allowedSortFields = [
+            "read_count",
+            "reading_time",
+            "createdAt"
+        ];
+
+        if (allowedSortFields.includes(sortBy)) {
+            sortOptions[sortBy] = order === "asc" ? 1 : -1;
+        }
+
+        const totalBlogs = await Blog.countDocuments(filter);
+
+        const blogs = await Blog.find(filter, searchTerm ? {
+            score: { $meta: "textScore" }
+        } : {})
+            .sort(sortOptions)
+            .skip((pageNumber - 1) * limitNumber)
+            .limit(limitNumber);
+
         res.json({
-            message: 'blogs fetched successfully',
-            blogs: blogs
-        })
+            message: "Blogs fetched successfully",
+            currentPage: pageNumber,
+            totalPages: Math.ceil(totalBlogs / limitNumber),
+            totalBlogs,
+            blogs
+        });
+
     } catch (error) {
         next(error);
     }
@@ -21,7 +67,7 @@ export const GetAllBlogsByUser = async (req, res, next) => {
         const limitNumber = parseInt(limit);
 
         const filter = {
-            authorId: req.user._id
+            "author.id": req.user._id
         };
 
         if (state) {
@@ -50,22 +96,22 @@ export const GetAllBlogsByUser = async (req, res, next) => {
 
 export const GetBlogsById = async (req, res, next) => {
     try {
-        const blog = await Blog
+        const blogById = await Blog
             .findByIdAndUpdate(
                 req.params.id,
                 { $inc: { read_count: 1 } },
-                { returnDocument: "after"}
+                { new: true }
             )
             .populate({
-                path: "authorId",
+                path: "author.id",
                 select: "firstName lastName email"
             });
-        if (!blog) {
+        if (!blogById) {
             return res.status(404).json({ message: "Post not found" });
         }
         return res.json({
             message: "blog fetched successfully",
-            blogs: blog
+            blogs: blogById
         })
     } catch (error) {
         return next(error);
@@ -74,17 +120,19 @@ export const GetBlogsById = async (req, res, next) => {
 
 export const CreateBlog = async (req, res, next) => {
     try {
-        const blog = await Blog.create({
+        const createdBlog = await Blog.create({
             title: req.body.title,
             description: req.body.description,
-            state: 'draft',
             body: req.body.body,
-            authorId: req.user._id,
+            author: {
+                id: req.user._id,
+                name: `${req.user.firstName} ${req.user.lastName}`
+            },
             tags: req.body.tags
         });
-        res.json({
+        res.status(201).json({
             message: "successfully created",
-            blog: blog
+            blog: createdBlog
         })
     } catch (error) {
         next(error);
@@ -95,9 +143,9 @@ export const PublishBlog = async (req, res, next) => {
     try {
         const updatedBlog = await Blog
             .findOneAndUpdate(
-                { _id: req.params.id, authorId: req.user._id },
+                { _id: req.params.id, "author.id": req.user._id },
                 { state: 'published' },
-                { returnDocument: "after"}
+                { new: true }
             );
 
         if (!updatedBlog) {
@@ -117,7 +165,7 @@ export const DeleteBlog = async (req, res, next) => {
     try {
         const deletedBlog = await Blog
             .findOneAndDelete(
-                { _id: req.params.id, authorId: req.user._id }
+                { _id: req.params.id, "author.id": req.user._id }
             );
 
         if (!deletedBlog) {
@@ -150,7 +198,7 @@ export const EditBlog = async (req, res, next) => {
 
         const editedBlog = await Blog
             .findOneAndUpdate(
-                { _id: req.params.id, authorId: req.user._id },
+                { _id: req.params.id, "author.id": req.user._id },
                 { $set: updates },
                 {
                     returnDocument: "after",
